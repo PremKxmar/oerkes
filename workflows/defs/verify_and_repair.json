@@ -1,0 +1,166 @@
+{
+  "name": "verify_and_repair",
+  "description": "Check a wave with POC 6, repair with POC 5, re-check. Stops after maxRepairRounds and asks a person.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "repair_loop",
+      "taskReferenceName": "repair_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.reconcile.status === 'NEEDS_REPAIR' && $.repair_loop.iteration <= $.context.maxRepairRounds; })()",
+      "inputParameters": {
+        "context": "${workflow.input.context}"
+      },
+      "loopOver": [
+        {
+          "name": "poc6_reconcile",
+          "taskReferenceName": "reconcile",
+          "type": "SUB_WORKFLOW",
+          "subWorkflowParam": {
+            "name": "poc6_reconcile",
+            "version": 1
+          },
+          "inputParameters": {
+            "eventType": "RECON_REQUEST",
+            "correlationId": "${workflow.input.correlationId}",
+            "context": "${workflow.input.context}",
+            "payload": {
+              "entities": "${workflow.input.payload.entities}",
+              "sourceBank": "${workflow.input.payload.sourceBank}",
+              "targetBank": "${workflow.input.payload.targetBank}",
+              "waveId": "${workflow.input.payload.waveId}"
+            }
+          }
+        },
+        {
+          "name": "needs_repair",
+          "taskReferenceName": "needs_repair",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "(function(){ return ($.status === 'NEEDS_REPAIR' && $.round <= $.context.maxRepairRounds) ? 'repair' : 'done'; })()",
+          "inputParameters": {
+            "status": "${reconcile.output.status}",
+            "round": "${repair_loop.output.iteration}",
+            "context": "${workflow.input.context}"
+          },
+          "decisionCases": {
+            "repair": [
+              {
+                "name": "poc5_self_heal",
+                "taskReferenceName": "repair",
+                "type": "SUB_WORKFLOW",
+                "subWorkflowParam": {
+                  "name": "poc5_self_heal",
+                  "version": 1
+                },
+                "inputParameters": {
+                  "eventType": "INCIDENT",
+                  "correlationId": "${workflow.input.correlationId}",
+                  "context": "${workflow.input.context}",
+                  "payload": {
+                    "incident": {
+                      "componentId": "records",
+                      "errorCode": "MISSING_RECORDS",
+                      "message": "Records missing after migration",
+                      "details": {
+                        "repairs": "${reconcile.output.recommendedAction.repairs}"
+                      },
+                      "sourceBank": "${workflow.input.payload.sourceBank}",
+                      "targetBank": "${workflow.input.payload.targetBank}",
+                      "wave": "${workflow.input.payload.waveId}"
+                    }
+                  }
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        }
+      ]
+    },
+    {
+      "name": "still_broken",
+      "taskReferenceName": "still_broken",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ return $.status === 'RECONCILED' ? 'ok' : 'review'; })()",
+      "inputParameters": {
+        "status": "${reconcile.output.status}"
+      },
+      "decisionCases": {
+        "review": [
+          {
+            "name": "manual_review_gate",
+            "taskReferenceName": "manual_review_gate",
+            "type": "SWITCH",
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ return ($.context.autoApprove === true) ? 'auto' : 'manual'; })()",
+            "inputParameters": {
+              "context": "${workflow.input.context}",
+              "status": "${reconcile.output.status}"
+            },
+            "decisionCases": {
+              "manual": [
+                {
+                  "name": "manual_review_wait",
+                  "taskReferenceName": "manual_review_wait",
+                  "type": "WAIT",
+                  "inputParameters": {
+                    "approvalTitle": "Reconciliation still failing after automatic repairs. Accept the wave?",
+                    "details": "${reconcile.output.evidence}"
+                  }
+                }
+              ]
+            },
+            "defaultCase": []
+          },
+          {
+            "name": "manual_review",
+            "taskReferenceName": "manual_review",
+            "type": "INLINE",
+            "inputParameters": {
+              "evaluatorType": "graaljs",
+              "expression": "(function(){ \n        if ($.context.autoApprove === true) return {approved: false, by: 'auto', comment: ''};\n        var w = $.wait || {};\n        return {approved: w.approved === true, by: w.by || 'unknown', comment: w.comment || ''}; })()",
+              "context": "${workflow.input.context}",
+              "wait": "${manual_review_wait.output}",
+              "status": "${reconcile.output.status}"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "verdict",
+      "taskReferenceName": "verdict",
+      "type": "INLINE",
+      "inputParameters": {
+        "evaluatorType": "graaljs",
+        "expression": "(function(){ var trail = [];\n          for (var n = 1; n <= $.loop.iteration; n++) {\n            var r = $.loop['' + n] || {}; var c = r.reconcile || {};\n            var found = (c.evidence || []).filter(function(e){ return e.indexOf('missing') >= 0 || e.indexOf('differ') >= 0; });\n            trail.push('Check ' + n + ': ' + c.status + (found.length ? ' (' + found.join('; ') + ')' : ''));\n            if (r.repair) trail.push('Repair ' + n + ': ' + r.repair.status + ', ' + (r.repair.evidence || []).slice(-2).join('; '));\n          }\n          if ($.review) trail.push('Manual review: ' + ($.review.approved ? 'accepted' : 'rejected') + ' by ' + $.review.by); return {status: ($.status === 'RECONCILED' || ($.review && $.review.approved)) ? 'VERIFIED' : 'FAILED', risk: $.status === 'RECONCILED' ? 'LOW' : 'HIGH', evidence: trail,\n        recommendedAction: $.status === 'RECONCILED' || ($.review && $.review.approved) ? {type: 'NONE'} : {type: 'ROLLBACK'}, correlationId: $.correlationId}; })()",
+        "correlationId": "${workflow.input.correlationId}",
+        "status": "${reconcile.output.status}",
+        "loop": "${repair_loop.output}",
+        "review": "${manual_review.output.result}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${verdict.output.result.status}",
+    "recommendedAction": "${verdict.output.result.recommendedAction}",
+    "risk": "${verdict.output.result.risk}",
+    "evidence": "${verdict.output.result.evidence}",
+    "correlationId": "${verdict.output.result.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}

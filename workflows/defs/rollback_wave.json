@@ -1,0 +1,36 @@
+{
+  "name": "rollback_wave",
+  "description": "Undo every component of a wave, newest first.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "poc1_rollback_wave",
+      "taskReferenceName": "rollback",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "wave": "${workflow.input.payload.wave}",
+        "sourceBank": "${workflow.input.payload.sourceBank}",
+        "reason": "${workflow.input.payload.reason}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${rollback.output.status}",
+    "recommendedAction": "${rollback.output.recommendedAction}",
+    "risk": "${rollback.output.risk}",
+    "evidence": "${rollback.output.evidence}",
+    "correlationId": "${rollback.output.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}

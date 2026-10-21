@@ -1,0 +1,124 @@
+{
+  "name": "poc1_merger_orchestrator",
+  "description": "POC 1 hub: assess (POC 2), govern, run the waves (POC 5 and 6 inside), then report. Modules never call each other; this workflow composes them.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "poc2_stack_assessment",
+      "taskReferenceName": "assess",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "poc2_stack_assessment",
+        "version": 1
+      },
+      "inputParameters": {
+        "eventType": "STACK_ASSESSMENT_REQUEST",
+        "correlationId": "${workflow.input.correlationId}",
+        "context": "${workflow.input.context}",
+        "payload": {
+          "acquirer": "${workflow.input.payload.acquirer}",
+          "acquired": "${workflow.input.payload.acquired}"
+        }
+      }
+    },
+    {
+      "name": "shared_governance",
+      "taskReferenceName": "govern",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "shared_governance",
+        "version": 1
+      },
+      "inputParameters": {
+        "eventType": "GOVERNANCE_REVIEW",
+        "correlationId": "${workflow.input.correlationId}",
+        "context": "${workflow.input.context}",
+        "payload": {
+          "plan": "${assess.output.recommendedAction.plan}"
+        }
+      }
+    },
+    {
+      "name": "plan_approved",
+      "taskReferenceName": "plan_approved",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ return $.status === 'APPROVED' ? 'go' : 'stop'; })()",
+      "inputParameters": {
+        "status": "${govern.output.status}"
+      },
+      "decisionCases": {
+        "stop": [
+          {
+            "name": "stop_rejected",
+            "taskReferenceName": "stop_rejected",
+            "type": "TERMINATE",
+            "inputParameters": {
+              "terminationStatus": "COMPLETED",
+              "terminationReason": "Plan rejected by governance",
+              "workflowOutput": {
+                "status": "REJECTED",
+                "risk": "${govern.output.risk}",
+                "evidence": "${govern.output.evidence}",
+                "correlationId": "${workflow.input.correlationId}",
+                "recommendedAction": {
+                  "type": "REPLAN"
+                }
+              }
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "poc1_execute_plan",
+      "taskReferenceName": "execute",
+      "type": "SUB_WORKFLOW",
+      "subWorkflowParam": {
+        "name": "poc1_execute_plan",
+        "version": 1
+      },
+      "inputParameters": {
+        "eventType": "WAVE_PLAN_EXECUTE",
+        "correlationId": "${workflow.input.correlationId}",
+        "context": "${workflow.input.context}",
+        "payload": {
+          "plan": "${assess.output.recommendedAction.plan}"
+        }
+      },
+      "optional": true
+    },
+    {
+      "name": "poc1_cutover_report",
+      "taskReferenceName": "cutover_report",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "plan": "${assess.output.recommendedAction.plan}",
+        "execution": "${execute.output}",
+        "executionError": "${execute.reasonForIncompletion}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${cutover_report.output.status}",
+    "recommendedAction": "${cutover_report.output.recommendedAction}",
+    "risk": "${cutover_report.output.risk}",
+    "evidence": "${cutover_report.output.evidence}",
+    "correlationId": "${cutover_report.output.correlationId}",
+    "waves": "${cutover_report.output.waves}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "failureWorkflow": "failure_to_event"
+}

@@ -1,0 +1,39 @@
+{
+  "name": "failure_to_event",
+  "description": "Runs when a merger workflow fails and publishes a WORKFLOW_FAILED event.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "workflowId",
+    "reason",
+    "failureStatus",
+    "failureTaskId",
+    "failedWorkflow"
+  ],
+  "tasks": [
+    {
+      "name": "shared_publish_failure",
+      "taskReferenceName": "publish",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "workflowId": "${workflow.input.workflowId}",
+        "reason": "${workflow.input.reason}",
+        "failureStatus": "${workflow.input.failureStatus}",
+        "failureTaskId": "${workflow.input.failureTaskId}",
+        "failedWorkflow": "${workflow.input.failedWorkflow}",
+        "correlationId": "${workflow.correlationId}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${publish.output.status}",
+    "recommendedAction": "${publish.output.recommendedAction}",
+    "risk": "${publish.output.risk}",
+    "evidence": "${publish.output.evidence}",
+    "correlationId": "${publish.output.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}

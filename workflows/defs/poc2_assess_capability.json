@@ -1,0 +1,74 @@
+{
+  "name": "poc2_assess_capability",
+  "description": "POC 2: decide what to do with one capability. Config rules first, the compare agent otherwise.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "poc2_match_rule",
+      "taskReferenceName": "match_rule",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "capability": "${workflow.input.payload.capability}",
+        "source": "${workflow.input.payload.source}",
+        "target": "${workflow.input.payload.target}"
+      }
+    },
+    {
+      "name": "rule_or_agent",
+      "taskReferenceName": "rule_or_agent",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ return $.matched ? 'rule' : 'agent'; })()",
+      "inputParameters": {
+        "matched": "${match_rule.output.matched}"
+      },
+      "decisionCases": {
+        "agent": [
+          {
+            "name": "poc2_compare_agent",
+            "taskReferenceName": "compare_agent",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "correlationId": "${workflow.input.correlationId}",
+              "capability": "${workflow.input.payload.capability}",
+              "source": "${workflow.input.payload.source}",
+              "target": "${workflow.input.payload.target}"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "answer",
+      "taskReferenceName": "answer",
+      "type": "INLINE",
+      "inputParameters": {
+        "evaluatorType": "graaljs",
+        "expression": "(function(){ var a = $.rule || $.agent; return {status: 'ASSESSED', risk: a.risk, evidence: [a.capability + ': ' + a.decision + ' (' + a.decidedBy + '), ' + a.reason],\n        recommendedAction: {type: a.decision, assessment: a}, correlationId: $.correlationId}; })()",
+        "correlationId": "${workflow.input.correlationId}",
+        "rule": "${match_rule.output.assessment}",
+        "agent": "${compare_agent.output.assessment}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${answer.output.result.status}",
+    "recommendedAction": "${answer.output.result.recommendedAction}",
+    "risk": "${answer.output.result.risk}",
+    "evidence": "${answer.output.result.evidence}",
+    "correlationId": "${answer.output.result.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}

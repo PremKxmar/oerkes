@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "merger-poc/request.schema.json",
+  "title": "Workflow input",
+  "description": "Every merger workflow takes this input. correlationId is the merger id and stays the same across all workflows of one merger.",
+  "type": "object",
+  "required": ["eventType", "correlationId", "context", "payload"],
+  "properties": {
+    "eventType": {
+      "type": "string",
+      "enum": ["MERGER_START", "STACK_ASSESSMENT_REQUEST", "CAPABILITY_ASSESSMENT", "GOVERNANCE_REVIEW",
+               "WAVE_PLAN_EXECUTE", "COMPONENT_MIGRATE", "INCIDENT", "VERIFY_WAVE", "RECON_REQUEST",
+               "RECON_BATCH", "ROLLBACK_REQUEST", "MANUAL"]
+    },
+    "correlationId": {"type": "string", "description": "Merger id, also the name of config/mergers/<id>.yaml", "examples": ["mrg-042"]},
+    "context": {
+      "type": "object",
+      "required": ["mergerId"],
+      "properties": {
+        "mergerId": {"type": "string"},
+        "autoApprove": {"type": "boolean", "default": false},
+        "maxRepairRounds": {"type": "integer", "minimum": 0, "default": 3}
+      }
+    },
+    "payload": {"type": "object", "description": "Workflow-specific input, e.g. {acquirer, acquired} for the hub or {entities, sourceBank, targetBank} for POC 6"}
+  }
+}

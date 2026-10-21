@@ -1,0 +1,107 @@
+{
+  "name": "migrate_component",
+  "description": "Move one Bank B component. Branches by type: database, integration, infrastructure, application.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "by_type",
+      "taskReferenceName": "by_type",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ \n        var t = $.type;\n        if (t === 'database') return 'database';\n        if (t === 'api_integration' || t === 'file_transfer') return 'integration';\n        if (t === 'infrastructure' || t === 'security' || t === 'monitoring') return 'infrastructure';\n        return 'application'; })()",
+      "inputParameters": {
+        "type": "${workflow.input.payload.item.type}"
+      },
+      "decisionCases": {
+        "database": [
+          {
+            "name": "migrate_database",
+            "taskReferenceName": "step_database",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "correlationId": "${workflow.input.correlationId}",
+              "item": "${workflow.input.payload.item}",
+              "sourceBank": "${workflow.input.payload.sourceBank}",
+              "targetBank": "${workflow.input.payload.targetBank}",
+              "wave": "${workflow.input.payload.wave}"
+            }
+          }
+        ],
+        "integration": [
+          {
+            "name": "migrate_integration",
+            "taskReferenceName": "step_integration",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "correlationId": "${workflow.input.correlationId}",
+              "item": "${workflow.input.payload.item}",
+              "sourceBank": "${workflow.input.payload.sourceBank}",
+              "targetBank": "${workflow.input.payload.targetBank}",
+              "wave": "${workflow.input.payload.wave}"
+            }
+          }
+        ],
+        "infrastructure": [
+          {
+            "name": "migrate_infrastructure",
+            "taskReferenceName": "step_infrastructure",
+            "type": "SIMPLE",
+            "inputParameters": {
+              "correlationId": "${workflow.input.correlationId}",
+              "item": "${workflow.input.payload.item}",
+              "sourceBank": "${workflow.input.payload.sourceBank}",
+              "targetBank": "${workflow.input.payload.targetBank}",
+              "wave": "${workflow.input.payload.wave}"
+            }
+          }
+        ]
+      },
+      "defaultCase": [
+        {
+          "name": "migrate_application",
+          "taskReferenceName": "step_application",
+          "type": "SIMPLE",
+          "inputParameters": {
+            "correlationId": "${workflow.input.correlationId}",
+            "item": "${workflow.input.payload.item}",
+            "sourceBank": "${workflow.input.payload.sourceBank}",
+            "targetBank": "${workflow.input.payload.targetBank}",
+            "wave": "${workflow.input.payload.wave}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "outcome",
+      "taskReferenceName": "outcome",
+      "type": "INLINE",
+      "inputParameters": {
+        "evaluatorType": "graaljs",
+        "expression": "(function(){ var s = [$.a, $.b, $.c, $.d].filter(function(o){ return o && o.componentId; })[0]; return {status: s.ok ? 'MIGRATED' : 'FAILED', risk: s.ok ? 'LOW' : 'MEDIUM', evidence: [s.componentId + ': ' + s.message],\n        recommendedAction: s.ok ? {type: 'NONE', componentId: s.componentId} : {type: 'SELF_HEAL', componentId: s.componentId, errorCode: s.errorCode, message: s.message, details: s.details}, correlationId: $.correlationId}; })()",
+        "correlationId": "${workflow.input.correlationId}",
+        "a": "${step_database.output}",
+        "b": "${step_integration.output}",
+        "c": "${step_infrastructure.output}",
+        "d": "${step_application.output}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${outcome.output.result.status}",
+    "recommendedAction": "${outcome.output.result.recommendedAction}",
+    "risk": "${outcome.output.result.risk}",
+    "evidence": "${outcome.output.result.evidence}",
+    "correlationId": "${outcome.output.result.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}

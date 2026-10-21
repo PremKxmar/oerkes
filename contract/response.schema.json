@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "merger-poc/response.schema.json",
+  "title": "Workflow output",
+  "description": "Every merger workflow returns this. status values depend on the workflow (PLAN_READY, APPROVED, MIGRATED, HEALED, RECONCILED, VERIFIED, CUTOVER_COMPLETE, ...).",
+  "type": "object",
+  "required": ["status", "recommendedAction", "risk", "evidence", "correlationId"],
+  "properties": {
+    "status": {"type": "string"},
+    "recommendedAction": {
+      "type": "object",
+      "required": ["type"],
+      "properties": {
+        "type": {"type": "string", "description": "What should happen next, e.g. NONE, EXECUTE_PLAN, SELF_HEAL, REPLAY_RECORDS, ROLLBACK, MANUAL_REVIEW, FOLLOW_UP"}
+      },
+      "additionalProperties": true
+    },
+    "risk": {"type": "string", "enum": ["LOW", "MEDIUM", "HIGH"]},
+    "evidence": {"type": "array", "items": {"type": "string"}, "description": "Plain-language lines a person can read"},
+    "correlationId": {"type": "string"}
+  }
+}

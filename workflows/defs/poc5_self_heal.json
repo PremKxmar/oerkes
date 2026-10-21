@@ -1,0 +1,189 @@
+{
+  "name": "poc5_self_heal",
+  "description": "POC 5: diagnose a failure, apply the runbook fix (with approval when needed), re-check.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "poc5_diagnose",
+      "taskReferenceName": "diagnose",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "incident": "${workflow.input.payload.incident}"
+      }
+    },
+    {
+      "name": "known_fix",
+      "taskReferenceName": "known_fix",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ return $.action === 'ESCALATE' ? 'escalate' : 'runbook'; })()",
+      "inputParameters": {
+        "action": "${diagnose.output.action}"
+      },
+      "decisionCases": {
+        "escalate": [
+          {
+            "name": "escalation_gate",
+            "taskReferenceName": "escalation_gate",
+            "type": "SWITCH",
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ return ($.context.autoApprove === true) ? 'auto' : 'manual'; })()",
+            "inputParameters": {
+              "context": "${workflow.input.context}"
+            },
+            "decisionCases": {
+              "manual": [
+                {
+                  "name": "escalation_wait",
+                  "taskReferenceName": "escalation_wait",
+                  "type": "WAIT",
+                  "inputParameters": {
+                    "approvalTitle": "Fix needed by a person",
+                    "details": "${diagnose.output.reason}"
+                  }
+                }
+              ]
+            },
+            "defaultCase": []
+          },
+          {
+            "name": "escalation",
+            "taskReferenceName": "escalation",
+            "type": "INLINE",
+            "inputParameters": {
+              "evaluatorType": "graaljs",
+              "expression": "(function(){ \n        if ($.context.autoApprove === true) return {approved: false, by: 'auto', comment: ''};\n        var w = $.wait || {};\n        return {approved: w.approved === true, by: w.by || 'unknown', comment: w.comment || ''}; })()",
+              "context": "${workflow.input.context}",
+              "wait": "${escalation_wait.output}"
+            }
+          }
+        ],
+        "runbook": [
+          {
+            "name": "fix_approval_gate",
+            "taskReferenceName": "fix_approval_gate",
+            "type": "SWITCH",
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ return ($.context.autoApprove === true || $.needsApproval !== true) ? 'auto' : 'manual'; })()",
+            "inputParameters": {
+              "context": "${workflow.input.context}",
+              "needsApproval": "${diagnose.output.needsApproval}"
+            },
+            "decisionCases": {
+              "manual": [
+                {
+                  "name": "fix_approval_wait",
+                  "taskReferenceName": "fix_approval_wait",
+                  "type": "WAIT",
+                  "inputParameters": {
+                    "approvalTitle": "Approve the fix",
+                    "details": "${diagnose.output}"
+                  }
+                }
+              ]
+            },
+            "defaultCase": []
+          },
+          {
+            "name": "fix_approval",
+            "taskReferenceName": "fix_approval",
+            "type": "INLINE",
+            "inputParameters": {
+              "evaluatorType": "graaljs",
+              "expression": "(function(){ \n        if ($.context.autoApprove === true || $.needsApproval !== true) return {approved: true, by: 'auto', comment: ''};\n        var w = $.wait || {};\n        return {approved: w.approved === true, by: w.by || 'unknown', comment: w.comment || ''}; })()",
+              "context": "${workflow.input.context}",
+              "wait": "${fix_approval_wait.output}",
+              "needsApproval": "${diagnose.output.needsApproval}"
+            }
+          },
+          {
+            "name": "fix_approved",
+            "taskReferenceName": "fix_approved",
+            "type": "SWITCH",
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ return $.approved ? 'apply' : 'skip'; })()",
+            "inputParameters": {
+              "approved": "${fix_approval.output.result.approved}"
+            },
+            "decisionCases": {
+              "apply": [
+                {
+                  "name": "poc5_apply_fix",
+                  "taskReferenceName": "apply_fix",
+                  "type": "SIMPLE",
+                  "inputParameters": {
+                    "correlationId": "${workflow.input.correlationId}",
+                    "incident": "${workflow.input.payload.incident}",
+                    "fix": "${diagnose.output}"
+                  }
+                },
+                {
+                  "name": "fix_applied",
+                  "taskReferenceName": "fix_applied",
+                  "type": "SWITCH",
+                  "evaluatorType": "graaljs",
+                  "expression": "(function(){ return $.applied ? 'verify' : 'skip'; })()",
+                  "inputParameters": {
+                    "applied": "${apply_fix.output.applied}"
+                  },
+                  "decisionCases": {
+                    "verify": [
+                      {
+                        "name": "poc5_verify_fix",
+                        "taskReferenceName": "verify_fix",
+                        "type": "SIMPLE",
+                        "inputParameters": {
+                          "correlationId": "${workflow.input.correlationId}",
+                          "incident": "${workflow.input.payload.incident}",
+                          "fix": "${diagnose.output}"
+                        }
+                      }
+                    ]
+                  },
+                  "defaultCase": []
+                }
+              ]
+            },
+            "defaultCase": []
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "outcome",
+      "taskReferenceName": "outcome",
+      "type": "INLINE",
+      "inputParameters": {
+        "evaluatorType": "graaljs",
+        "expression": "(function(){  return {status: $.fix.action === 'ESCALATE' ? ($.person && $.person.approved ? 'RESOLVED_BY_PERSON' : 'NOT_HEALED') : ($.verify && $.verify.healed ? 'HEALED' : 'NOT_HEALED'), risk: $.fix.risk, evidence: [$.fix.reason, $.approvalNote, $.apply ? $.apply.message : 'Fix not applied', $.verify ? $.verify.message : 'Not re-checked'].filter(function(x){ return x; }),\n        recommendedAction: {type: ($.verify && $.verify.healed) || ($.person && $.person.approved) ? 'NONE' : 'ROLLBACK', componentId: $.incident.componentId, fix: $.fix.action}, correlationId: $.correlationId}; })()",
+        "correlationId": "${workflow.input.correlationId}",
+        "incident": "${workflow.input.payload.incident}",
+        "fix": "${diagnose.output}",
+        "apply": "${apply_fix.output}",
+        "verify": "${verify_fix.output}",
+        "person": "${escalation.output.result}",
+        "approvalNote": "${fix_approval.output.result.comment}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${outcome.output.result.status}",
+    "recommendedAction": "${outcome.output.result.recommendedAction}",
+    "risk": "${outcome.output.result.risk}",
+    "evidence": "${outcome.output.result.evidence}",
+    "correlationId": "${outcome.output.result.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}

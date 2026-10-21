@@ -1,0 +1,36 @@
+{
+  "name": "poc6_compare_batch",
+  "description": "POC 6: compare one entity (accounts, balances, ...) between the banks.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "poc6_compare_entity",
+      "taskReferenceName": "compare_entity",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "entity": "${workflow.input.payload.entity}",
+        "sourceBank": "${workflow.input.payload.sourceBank}",
+        "targetBank": "${workflow.input.payload.targetBank}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${compare_entity.output.status}",
+    "recommendedAction": "${compare_entity.output.recommendedAction}",
+    "risk": "${compare_entity.output.risk}",
+    "evidence": "${compare_entity.output.evidence}",
+    "correlationId": "${compare_entity.output.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}

@@ -1,0 +1,66 @@
+{
+  "name": "poc6_reconcile",
+  "description": "POC 6: compare every entity for a wave in parallel and say whether repair is needed.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "compare_tasks",
+      "taskReferenceName": "compare_tasks",
+      "type": "INLINE",
+      "inputParameters": {
+        "evaluatorType": "graaljs",
+        "expression": "(function(){ var list = $.entities; var tasks = []; var inputs = {}; for (var i = 0; i < list.length; i++) { var x = list[i]; var r = 'cmp_' + x; tasks.push({name: 'poc6_compare_batch', taskReferenceName: r, type: 'SUB_WORKFLOW', optional: true, subWorkflowParam: {name: 'poc6_compare_batch', version: 1}}); inputs[r] = {eventType: 'RECON_BATCH', correlationId: $.correlationId, context: $.context, payload: {entity: x, sourceBank: $.sourceBank, targetBank: $.targetBank}}; } return {tasks: tasks, inputs: inputs, count: list.length}; })()",
+        "correlationId": "${workflow.input.correlationId}",
+        "context": "${workflow.input.context}",
+        "entities": "${workflow.input.payload.entities}",
+        "sourceBank": "${workflow.input.payload.sourceBank}",
+        "targetBank": "${workflow.input.payload.targetBank}"
+      }
+    },
+    {
+      "name": "compare_fork",
+      "taskReferenceName": "compare_fork",
+      "type": "FORK_JOIN_DYNAMIC",
+      "inputParameters": {
+        "dynamicTasks": "${compare_tasks.output.result.tasks}",
+        "dynamicTasksInput": "${compare_tasks.output.result.inputs}"
+      },
+      "dynamicForkTasksParam": "dynamicTasks",
+      "dynamicForkTasksInputParamName": "dynamicTasksInput"
+    },
+    {
+      "name": "compare_fork_join",
+      "taskReferenceName": "compare_fork_join",
+      "type": "JOIN",
+      "joinOn": []
+    },
+    {
+      "name": "poc6_summarise",
+      "taskReferenceName": "summarise",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "batches": "${compare_fork_join.output}",
+        "expected": "${compare_tasks.output.result.count}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${summarise.output.status}",
+    "recommendedAction": "${summarise.output.recommendedAction}",
+    "risk": "${summarise.output.risk}",
+    "evidence": "${summarise.output.evidence}",
+    "correlationId": "${summarise.output.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}

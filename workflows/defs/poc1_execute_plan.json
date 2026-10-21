@@ -1,0 +1,356 @@
+{
+  "name": "poc1_execute_plan",
+  "description": "POC 1: for each wave, change-board approval, migrate in parallel, heal failures (POC 5), verify (POC 6), then close or roll back.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "wave_count",
+      "taskReferenceName": "wave_count",
+      "type": "INLINE",
+      "inputParameters": {
+        "evaluatorType": "graaljs",
+        "expression": "(function(){ return $.plan.waves.length; })()",
+        "plan": "${workflow.input.payload.plan}"
+      }
+    },
+    {
+      "name": "wave_loop",
+      "taskReferenceName": "wave_loop",
+      "type": "DO_WHILE",
+      "evaluatorType": "graaljs",
+      "loopCondition": "(function(){ return $.wave_loop.iteration < $.waves; })()",
+      "inputParameters": {
+        "waves": "${wave_count.output.result}"
+      },
+      "loopOver": [
+        {
+          "name": "current_wave",
+          "taskReferenceName": "current_wave",
+          "type": "INLINE",
+          "inputParameters": {
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ return $.plan.waves[$.i - 1]; })()",
+            "plan": "${workflow.input.payload.plan}",
+            "i": "${wave_loop.output.iteration}"
+          }
+        },
+        {
+          "name": "change_board_gate",
+          "taskReferenceName": "change_board_gate",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "(function(){ return ($.context.autoApprove === true) ? 'auto' : 'manual'; })()",
+          "inputParameters": {
+            "context": "${workflow.input.context}"
+          },
+          "decisionCases": {
+            "manual": [
+              {
+                "name": "change_board_wait",
+                "taskReferenceName": "change_board_wait",
+                "type": "WAIT",
+                "inputParameters": {
+                  "approvalTitle": "Change board: approve this wave",
+                  "details": "${current_wave.output.result}"
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        },
+        {
+          "name": "change_board",
+          "taskReferenceName": "change_board",
+          "type": "INLINE",
+          "inputParameters": {
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ \n        if ($.context.autoApprove === true) return {approved: true, by: 'auto', comment: ''};\n        var w = $.wait || {};\n        return {approved: w.approved === true, by: w.by || 'unknown', comment: w.comment || ''}; })()",
+            "context": "${workflow.input.context}",
+            "wait": "${change_board_wait.output}"
+          }
+        },
+        {
+          "name": "wave_approved",
+          "taskReferenceName": "wave_approved",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "(function(){ return $.approved ? 'go' : 'stop'; })()",
+          "inputParameters": {
+            "approved": "${change_board.output.result.approved}"
+          },
+          "decisionCases": {
+            "stop": [
+              {
+                "name": "stop_rejected",
+                "taskReferenceName": "stop_rejected",
+                "type": "TERMINATE",
+                "inputParameters": {
+                  "terminationStatus": "COMPLETED",
+                  "terminationReason": "Change board rejected the wave",
+                  "workflowOutput": {
+                    "status": "STOPPED",
+                    "risk": "MEDIUM",
+                    "correlationId": "${workflow.input.correlationId}",
+                    "recommendedAction": {
+                      "type": "REPLAN"
+                    },
+                    "evidence": [
+                      "Change board rejected wave ${current_wave.output.result.id}"
+                    ]
+                  }
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        },
+        {
+          "name": "migrate_tasks",
+          "taskReferenceName": "migrate_tasks",
+          "type": "INLINE",
+          "inputParameters": {
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ var list = $.wave.items; var tasks = []; var inputs = {}; for (var i = 0; i < list.length; i++) { var x = list[i]; var r = 'mig_' + x.componentId; tasks.push({name: 'migrate_component', taskReferenceName: r, type: 'SUB_WORKFLOW', optional: true, subWorkflowParam: {name: 'migrate_component', version: 1}}); inputs[r] = {eventType: 'COMPONENT_MIGRATE', correlationId: $.correlationId, context: $.context, payload: {item: x, sourceBank: $.src, targetBank: $.tgt, wave: $.wave.id}}; } return {tasks: tasks, inputs: inputs, count: list.length}; })()",
+            "correlationId": "${workflow.input.correlationId}",
+            "context": "${workflow.input.context}",
+            "wave": "${current_wave.output.result}",
+            "src": "${workflow.input.payload.plan.acquired}",
+            "tgt": "${workflow.input.payload.plan.acquirer}"
+          }
+        },
+        {
+          "name": "migrate_fork",
+          "taskReferenceName": "migrate_fork",
+          "type": "FORK_JOIN_DYNAMIC",
+          "inputParameters": {
+            "dynamicTasks": "${migrate_tasks.output.result.tasks}",
+            "dynamicTasksInput": "${migrate_tasks.output.result.inputs}"
+          },
+          "dynamicForkTasksParam": "dynamicTasks",
+          "dynamicForkTasksInputParamName": "dynamicTasksInput"
+        },
+        {
+          "name": "migrate_fork_join",
+          "taskReferenceName": "migrate_fork_join",
+          "type": "JOIN",
+          "joinOn": []
+        },
+        {
+          "name": "failures",
+          "taskReferenceName": "failures",
+          "type": "INLINE",
+          "inputParameters": {
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ function byComponent(join) { var m = {}; for (var k in (join || {})) {\n  var v = join[k]; if (v && v.recommendedAction && v.recommendedAction.componentId) m[v.recommendedAction.componentId] = v; }\n  return m; }\n        var out = byComponent($.results); var list = [];\n        for (var i = 0; i < $.wave.items.length; i++) {\n          var item = $.wave.items[i]; var r = out[item.componentId];\n          if (!r || r.status !== 'MIGRATED') {\n            var a = (r && r.recommendedAction) || {};\n            list.push({componentId: item.componentId, item: item, errorCode: a.errorCode || 'UNKNOWN',\n                       message: a.message || 'migrate_component did not finish', details: a.details || {},\n                       sourceBank: $.src, targetBank: $.tgt, wave: $.wave.id});\n          }\n        }\n        return list; })()",
+            "wave": "${current_wave.output.result}",
+            "results": "${migrate_fork_join.output}",
+            "src": "${workflow.input.payload.plan.acquired}",
+            "tgt": "${workflow.input.payload.plan.acquirer}"
+          }
+        },
+        {
+          "name": "any_failures",
+          "taskReferenceName": "any_failures",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "(function(){ return $.failures.length > 0 ? 'heal' : 'none'; })()",
+          "inputParameters": {
+            "failures": "${failures.output.result}"
+          },
+          "decisionCases": {
+            "heal": [
+              {
+                "name": "heal_tasks",
+                "taskReferenceName": "heal_tasks",
+                "type": "INLINE",
+                "inputParameters": {
+                  "evaluatorType": "graaljs",
+                  "expression": "(function(){ var list = $.failures; var tasks = []; var inputs = {}; for (var i = 0; i < list.length; i++) { var x = list[i]; var r = 'heal_' + x.componentId; tasks.push({name: 'poc5_self_heal', taskReferenceName: r, type: 'SUB_WORKFLOW', optional: true, subWorkflowParam: {name: 'poc5_self_heal', version: 1}}); inputs[r] = {eventType: 'INCIDENT', correlationId: $.correlationId, context: $.context, payload: {incident: x}}; } return {tasks: tasks, inputs: inputs, count: list.length}; })()",
+                  "correlationId": "${workflow.input.correlationId}",
+                  "context": "${workflow.input.context}",
+                  "failures": "${failures.output.result}"
+                }
+              },
+              {
+                "name": "heal_fork",
+                "taskReferenceName": "heal_fork",
+                "type": "FORK_JOIN_DYNAMIC",
+                "inputParameters": {
+                  "dynamicTasks": "${heal_tasks.output.result.tasks}",
+                  "dynamicTasksInput": "${heal_tasks.output.result.inputs}"
+                },
+                "dynamicForkTasksParam": "dynamicTasks",
+                "dynamicForkTasksInputParamName": "dynamicTasksInput"
+              },
+              {
+                "name": "heal_fork_join",
+                "taskReferenceName": "heal_fork_join",
+                "type": "JOIN",
+                "joinOn": []
+              }
+            ]
+          },
+          "defaultCase": []
+        },
+        {
+          "name": "wave_health",
+          "taskReferenceName": "wave_health",
+          "type": "INLINE",
+          "inputParameters": {
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ function byComponent(join) { var m = {}; for (var k in (join || {})) {\n  var v = join[k]; if (v && v.recommendedAction && v.recommendedAction.componentId) m[v.recommendedAction.componentId] = v; }\n  return m; }\n        var heals = byComponent($.heals); var open = [];\n        for (var i = 0; i < $.failures.length; i++) {\n          var h = heals[$.failures[i].componentId];\n          if (!h || (h.status !== 'HEALED' && h.status !== 'RESOLVED_BY_PERSON')) open.push($.failures[i].componentId);\n        }\n        return {healthy: open.length === 0, unresolved: open}; })()",
+            "failures": "${failures.output.result}",
+            "heals": "${heal_fork_join.output}"
+          }
+        },
+        {
+          "name": "needs_verify",
+          "taskReferenceName": "needs_verify",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "(function(){ return ($.healthy && $.entities.length > 0) ? 'verify' : 'skip'; })()",
+          "inputParameters": {
+            "healthy": "${wave_health.output.result.healthy}",
+            "entities": "${current_wave.output.result.reconcile}"
+          },
+          "decisionCases": {
+            "verify": [
+              {
+                "name": "verify_and_repair",
+                "taskReferenceName": "verify",
+                "type": "SUB_WORKFLOW",
+                "subWorkflowParam": {
+                  "name": "verify_and_repair",
+                  "version": 1
+                },
+                "inputParameters": {
+                  "eventType": "VERIFY_WAVE",
+                  "correlationId": "${workflow.input.correlationId}",
+                  "context": "${workflow.input.context}",
+                  "payload": {
+                    "entities": "${current_wave.output.result.reconcile}",
+                    "sourceBank": "${workflow.input.payload.plan.acquired}",
+                    "targetBank": "${workflow.input.payload.plan.acquirer}",
+                    "waveId": "${current_wave.output.result.id}"
+                  }
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        },
+        {
+          "name": "wave_verdict",
+          "taskReferenceName": "wave_verdict",
+          "type": "INLINE",
+          "inputParameters": {
+            "evaluatorType": "graaljs",
+            "expression": "(function(){ \n        if (!$.healthy) return {pass: false, reason: 'Could not heal: ' + $.unresolved.join(', ')};\n        if ($.entities.length > 0 && (!$.verify || $.verify.status !== 'VERIFIED'))\n          return {pass: false, reason: 'Reconciliation failed after repairs'};\n        return {pass: true, reason: ''}; })()",
+            "healthy": "${wave_health.output.result.healthy}",
+            "unresolved": "${wave_health.output.result.unresolved}",
+            "entities": "${current_wave.output.result.reconcile}",
+            "verify": "${verify.output}"
+          }
+        },
+        {
+          "name": "close_or_rollback",
+          "taskReferenceName": "close_or_rollback",
+          "type": "SWITCH",
+          "evaluatorType": "graaljs",
+          "expression": "(function(){ return $.ok ? 'close' : 'rollback'; })()",
+          "inputParameters": {
+            "ok": "${wave_verdict.output.result.pass}"
+          },
+          "decisionCases": {
+            "close": [
+              {
+                "name": "poc1_close_wave",
+                "taskReferenceName": "close_wave",
+                "type": "SIMPLE",
+                "inputParameters": {
+                  "correlationId": "${workflow.input.correlationId}",
+                  "wave": "${current_wave.output.result}",
+                  "migrations": "${migrate_fork_join.output}",
+                  "heals": "${heal_fork_join.output}",
+                  "verification": "${verify.output}"
+                }
+              }
+            ],
+            "rollback": [
+              {
+                "name": "rollback_wave",
+                "taskReferenceName": "rollback",
+                "type": "SUB_WORKFLOW",
+                "subWorkflowParam": {
+                  "name": "rollback_wave",
+                  "version": 1
+                },
+                "inputParameters": {
+                  "eventType": "ROLLBACK_REQUEST",
+                  "correlationId": "${workflow.input.correlationId}",
+                  "context": "${workflow.input.context}",
+                  "payload": {
+                    "wave": "${current_wave.output.result}",
+                    "sourceBank": "${workflow.input.payload.plan.acquired}",
+                    "reason": "${wave_verdict.output.result.reason}"
+                  }
+                }
+              },
+              {
+                "name": "stop_failed",
+                "taskReferenceName": "stop_failed",
+                "type": "TERMINATE",
+                "inputParameters": {
+                  "terminationStatus": "FAILED",
+                  "terminationReason": "Wave ${current_wave.output.result.id} rolled back: ${wave_verdict.output.result.reason}",
+                  "workflowOutput": {
+                    "status": "ROLLED_BACK",
+                    "risk": "HIGH",
+                    "correlationId": "${workflow.input.correlationId}",
+                    "recommendedAction": {
+                      "type": "MANUAL_REVIEW"
+                    },
+                    "evidence": "${rollback.output.evidence}"
+                  }
+                }
+              }
+            ]
+          },
+          "defaultCase": []
+        }
+      ]
+    },
+    {
+      "name": "poc1_summarise_execution",
+      "taskReferenceName": "summarise_execution",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "loop": "${wave_loop.output}",
+        "risks": [
+          "${workflow.input.payload.plan.risk}"
+        ]
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${summarise_execution.output.status}",
+    "recommendedAction": "${summarise_execution.output.recommendedAction}",
+    "risk": "${summarise_execution.output.risk}",
+    "evidence": "${summarise_execution.output.evidence}",
+    "correlationId": "${summarise_execution.output.correlationId}",
+    "waves": "${summarise_execution.output.waves}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0,
+  "failureWorkflow": "failure_to_event"
+}

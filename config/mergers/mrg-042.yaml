@@ -1,0 +1,75 @@
+# One file per merger. To run a new merger, copy this file, change the banks
+# and rules, and start the hub with the new correlationId. No workflow changes.
+mergerId: mrg-042
+name: Bank A acquires Bank B (demo)
+acquirer: bank_a
+acquired: bank_b
+
+banks:
+  bank_a:
+    displayName: Bank A
+    adapter: mock            # mock | kinective
+    baseUrl: http://localhost:8099/bank_a
+  bank_b:
+    displayName: Bank B
+    adapter: mock
+    baseUrl: http://localhost:8099/bank_b
+
+# Passed to every workflow in context. autoApprove skips all WAIT steps,
+# which is useful for tests. Escalations to a person are never auto-approved.
+run:
+  autoApprove: false
+  maxRepairRounds: 3
+
+# POC 2. Capabilities listed here get a fixed answer and skip the agent.
+# Anything not listed goes to the LangGraph compare agent.
+assessment:
+  rules:
+    identity:
+      decision: MIGRATE
+      risk: MEDIUM
+      reason: Users and groups move into the acquirer's directory
+    hosting:
+      decision: MIGRATE
+      risk: MEDIUM
+      reason: Workloads move onto the acquirer's hosting
+    network:
+      decision: MIGRATE
+      risk: LOW
+      reason: Branch links are re-pointed to the acquirer's network
+    certificates:
+      decision: MIGRATE
+      risk: LOW
+      reason: Certificates are re-issued under the acquirer's CA
+  waves:
+    - id: 1
+      name: Foundation
+      types: [infrastructure, security, identity]
+      reconcile: []
+    - id: 2
+      name: Data and integrations
+      types: [database, api_integration, file_transfer]
+      reconcile: [accounts, balances, transactions]
+    - id: 3
+      name: Applications
+      types: [application, monitoring]
+      reconcile: []
+
+# Shared governance, checked before any wave runs.
+governance:
+  signOffAtOrAbove: MEDIUM     # overall plan risk that needs a sign-off
+  maxHighRiskPerWave: 3
+  blockedDecisions: []         # e.g. [RETIRE] to forbid retiring anything
+
+# POC 5. Error code -> fix.
+selfHeal:
+  runbooks:
+    AUTH_EXPIRED:    {action: REFRESH_TOKEN,  needsApproval: false, risk: LOW}
+    FIELD_FORMAT:    {action: APPLY_MAPPING,  needsApproval: true,  risk: MEDIUM}
+    MISSING_RECORDS: {action: REPLAY_RECORDS, needsApproval: false, risk: LOW}
+    TIMEOUT:         {action: RETRY,          needsApproval: false, risk: LOW}
+  mappings:
+    date_of_birth: {fromFormat: DD/MM/YYYY, toFormat: YYYY-MM-DD}
+
+notifications:
+  webhookUrl: ""               # failure events are POSTed here when set

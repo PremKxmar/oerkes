@@ -1,0 +1,85 @@
+{
+  "name": "shared_governance",
+  "description": "Shared: check the plan against policy and get a sign-off when the risk needs one.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "shared_policy_check",
+      "taskReferenceName": "policy_check",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "plan": "${workflow.input.payload.plan}"
+      }
+    },
+    {
+      "name": "sign_off_gate",
+      "taskReferenceName": "sign_off_gate",
+      "type": "SWITCH",
+      "evaluatorType": "graaljs",
+      "expression": "(function(){ return ($.context.autoApprove === true || $.verdict !== 'NEEDS_SIGN_OFF') ? 'auto' : 'manual'; })()",
+      "inputParameters": {
+        "context": "${workflow.input.context}",
+        "verdict": "${policy_check.output.verdict}"
+      },
+      "decisionCases": {
+        "manual": [
+          {
+            "name": "sign_off_wait",
+            "taskReferenceName": "sign_off_wait",
+            "type": "WAIT",
+            "inputParameters": {
+              "approvalTitle": "Sign off the merger plan",
+              "details": "${policy_check.output.findings}"
+            }
+          }
+        ]
+      },
+      "defaultCase": []
+    },
+    {
+      "name": "sign_off",
+      "taskReferenceName": "sign_off",
+      "type": "INLINE",
+      "inputParameters": {
+        "evaluatorType": "graaljs",
+        "expression": "(function(){ \n        if ($.context.autoApprove === true || $.verdict !== 'NEEDS_SIGN_OFF') return {approved: true, by: 'auto', comment: ''};\n        var w = $.wait || {};\n        return {approved: w.approved === true, by: w.by || 'unknown', comment: w.comment || ''}; })()",
+        "context": "${workflow.input.context}",
+        "wait": "${sign_off_wait.output}",
+        "verdict": "${policy_check.output.verdict}"
+      }
+    },
+    {
+      "name": "decision",
+      "taskReferenceName": "decision",
+      "type": "INLINE",
+      "inputParameters": {
+        "evaluatorType": "graaljs",
+        "expression": "(function(){  return {status: ($.verdict !== 'BLOCKED' && $.signOff.approved) ? 'APPROVED' : 'REJECTED', risk: $.risk, evidence: $.findings.concat(['Sign-off: ' + ($.verdict === 'NEEDS_SIGN_OFF' ? ($.signOff.approved ? 'approved by ' + $.signOff.by : 'rejected by ' + $.signOff.by) : 'not needed')]),\n        recommendedAction: {type: 'NONE'}, correlationId: $.correlationId}; })()",
+        "correlationId": "${workflow.input.correlationId}",
+        "verdict": "${policy_check.output.verdict}",
+        "findings": "${policy_check.output.findings}",
+        "risk": "${policy_check.output.risk}",
+        "signOff": "${sign_off.output.result}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${decision.output.result.status}",
+    "recommendedAction": "${decision.output.result.recommendedAction}",
+    "risk": "${decision.output.result.risk}",
+    "evidence": "${decision.output.result.evidence}",
+    "correlationId": "${decision.output.result.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}

@@ -1,0 +1,75 @@
+{
+  "name": "poc2_stack_assessment",
+  "description": "POC 2: read both banks' inventories, assess every capability in parallel, and build a wave plan.",
+  "version": 1,
+  "schemaVersion": 2,
+  "ownerEmail": "orkes-poc@example.com",
+  "inputParameters": [
+    "eventType",
+    "correlationId",
+    "context",
+    "payload"
+  ],
+  "tasks": [
+    {
+      "name": "poc2_fetch_inventories",
+      "taskReferenceName": "fetch_inventories",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "acquirer": "${workflow.input.payload.acquirer}",
+        "acquired": "${workflow.input.payload.acquired}"
+      }
+    },
+    {
+      "name": "assess_tasks",
+      "taskReferenceName": "assess_tasks",
+      "type": "INLINE",
+      "inputParameters": {
+        "evaluatorType": "graaljs",
+        "expression": "(function(){ var list = $.capabilities; var tasks = []; var inputs = {}; for (var i = 0; i < list.length; i++) { var x = list[i]; var r = 'assess_' + x.capability; tasks.push({name: 'poc2_assess_capability', taskReferenceName: r, type: 'SUB_WORKFLOW', optional: true, subWorkflowParam: {name: 'poc2_assess_capability', version: 1}}); inputs[r] = {eventType: 'CAPABILITY_ASSESSMENT', correlationId: $.correlationId, context: $.context, payload: x}; } return {tasks: tasks, inputs: inputs, count: list.length}; })()",
+        "correlationId": "${workflow.input.correlationId}",
+        "context": "${workflow.input.context}",
+        "capabilities": "${fetch_inventories.output.capabilities}"
+      }
+    },
+    {
+      "name": "assess_fork",
+      "taskReferenceName": "assess_fork",
+      "type": "FORK_JOIN_DYNAMIC",
+      "inputParameters": {
+        "dynamicTasks": "${assess_tasks.output.result.tasks}",
+        "dynamicTasksInput": "${assess_tasks.output.result.inputs}"
+      },
+      "dynamicForkTasksParam": "dynamicTasks",
+      "dynamicForkTasksInputParamName": "dynamicTasksInput"
+    },
+    {
+      "name": "assess_fork_join",
+      "taskReferenceName": "assess_fork_join",
+      "type": "JOIN",
+      "joinOn": []
+    },
+    {
+      "name": "poc2_build_wave_plan",
+      "taskReferenceName": "build_wave_plan",
+      "type": "SIMPLE",
+      "inputParameters": {
+        "correlationId": "${workflow.input.correlationId}",
+        "acquirer": "${workflow.input.payload.acquirer}",
+        "acquired": "${workflow.input.payload.acquired}",
+        "assessments": "${assess_fork_join.output}"
+      }
+    }
+  ],
+  "outputParameters": {
+    "status": "${build_wave_plan.output.status}",
+    "recommendedAction": "${build_wave_plan.output.recommendedAction}",
+    "risk": "${build_wave_plan.output.risk}",
+    "evidence": "${build_wave_plan.output.evidence}",
+    "correlationId": "${build_wave_plan.output.correlationId}"
+  },
+  "restartable": true,
+  "timeoutPolicy": "ALERT_ONLY",
+  "timeoutSeconds": 0
+}
